@@ -44,18 +44,49 @@ def base_opts():
     return opts
 
 
-def find_video(date_compact):
-    """제목에 'YYYYMMDD'가 들어간 모닝루틴 영상을 검색으로 찾는다."""
-    query = f"ytsearch10:{TITLE_PREFIX} {date_compact}"
-    opts = base_opts() | {"extract_flat": True}
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        result = ydl.extract_info(query, download=False)
-    for entry in result.get("entries") or []:
+# 채널의 라이브 목록. 기준 영상(2026-11-20 방송)에서 채널 주소를 알아내 쓴다.
+REFERENCE_VIDEO = "LqtGXerpRDc"
+
+
+def _match(entries, date_compact, source):
+    for entry in entries or []:
         title = entry.get("title") or ""
-        channel = entry.get("channel") or entry.get("uploader") or ""
-        if TITLE_PREFIX in title and date_compact in title and (not channel or CHANNEL_HINT in channel):
+        if TITLE_PREFIX in title and date_compact in title:
+            log(f"[{source}] 일치: {title}")
             return entry.get("id"), title
     return None, None
+
+
+def _channel_streams_url():
+    with yt_dlp.YoutubeDL(base_opts()) as ydl:
+        info = ydl.extract_info(f"https://www.youtube.com/watch?v={REFERENCE_VIDEO}", download=False)
+    base = info.get("channel_url") or info.get("uploader_url")
+    log(f"채널: {info.get('channel')} {base}")
+    return base.rstrip("/") + "/streams" if base else None
+
+
+def find_video(date_compact):
+    """제목에 'YYYYMMDD'가 들어간 모닝루틴 영상을 채널 라이브 목록 → 검색 순으로 찾는다."""
+    flat = base_opts() | {"extract_flat": True, "playlistend": 30}
+    try:
+        url = _channel_streams_url()
+        if url:
+            with yt_dlp.YoutubeDL(flat) as ydl:
+                entries = ydl.extract_info(url, download=False).get("entries")
+            log(f"라이브 목록 {len(entries or [])}개, 최근 3개: {[e.get('title') for e in (entries or [])[:3]]}")
+            vid, title = _match(entries, date_compact, "라이브 목록")
+            if vid:
+                return vid, title
+    except Exception as e:  # noqa: BLE001
+        if is_block_error(e):
+            raise
+        log(f"라이브 목록 조회 실패, 검색으로 전환: {e}")
+
+    query = f"ytsearch20:{TITLE_PREFIX} {date_compact}"
+    with yt_dlp.YoutubeDL(flat) as ydl:
+        entries = ydl.extract_info(query, download=False).get("entries")
+    log(f"검색 결과 {len(entries or [])}개: {[e.get('title') for e in (entries or [])[:5]]}")
+    return _match(entries, date_compact, "검색")
 
 
 def fmt_ts(seconds):
