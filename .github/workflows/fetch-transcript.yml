@@ -1,0 +1,65 @@
+name: 모닝루틴 자막 수집
+
+on:
+  schedule:
+    # 평일 KST 10:30 / 11:30 / 13:00 (UTC 01:30 / 02:30 / 04:00). 이미 저장된 날은 건너뜀.
+    - cron: "30 1 * * 1-5"
+    - cron: "30 2 * * 1-5"
+    - cron: "0 4 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "방송일(YYYY-MM-DD). 비우면 오늘(KST)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fetch-transcript
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install yt-dlp
+        run: pip install -U yt-dlp
+
+      - name: Fetch transcript
+        id: fetch
+        env:
+          INPUT_DATE: ${{ github.event.inputs.date }}
+        run: |
+          set +e
+          python scripts/fetch_transcript.py $INPUT_DATE
+          code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          case $code in
+            0) echo "::notice::자막 저장 완료(또는 이미 있음)";;
+            2) echo "::notice::해당 날짜 영상 없음(휴일 등)";;
+            3) echo "::warning::영상은 있으나 자막이 아직 없음";;
+            4) echo "::error::유튜브가 요청을 막음(봇 확인 등)"; exit 1;;
+            *) exit $code;;
+          esac
+
+      - name: Commit
+        if: steps.fetch.outputs.code == '0'
+        run: |
+          git config user.name "transcript-bot"
+          git config user.email "transcript-bot@users.noreply.github.com"
+          git add transcripts/
+          if git diff --cached --quiet; then
+            echo "변경 없음"
+          else
+            git commit -m "transcript: $(ls -t transcripts | head -1)"
+            git push
+          fi
